@@ -1,0 +1,40 @@
+version: "3"
+services:
+        website:
+                container_name: clockwerx-web
+                image: registry.gitlab.com/swxadmin/clockwerx-web
+                networks:
+                        net:
+                                ipv4_address: 172.4.11.2
+                ports:
+                        - "4742:80"
+                volumes:
+                        - /var/log/clockwerx/clockwerxWeb:/var/www/clockwerxWeb/logs
+                restart: always
+                depends_on:
+                        - web_service
+
+        web_service:
+                container_name: clockwerx-ws
+                image: registry.gitlab.com/swxadmin/clockwerx-ws
+                networks: 
+                        net:
+                                ipv4_address: 172.4.11.3
+                ports:
+                        - "4743:4743"
+                devices:
+                        - /dev/lirc0
+                volumes:
+                        - /etc/lirc:/etc/lirc
+                        - /etc/modules:/etc/modules
+                        - /etc/localtime:/etc/localtime:ro 
+                        - /var/log/clockwerx/clockwerxWS:/var/www/clockwerxWS/logs
+                restart: always
+        
+networks:
+        net:
+                ipam:
+                        driver: default
+                        config:
+                                - subnet: "172.4.11.0/24"
+                                  

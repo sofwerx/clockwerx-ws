@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+
+import fcntl
+import array
+import os
+import struct
+import select
+import threading
+import subprocess
+import logging
+
+logger = logging.getLogger()
+
+LIRC_GET_REC_MODE = 0x80046902 # _IOR('i', 0x00000002, __u32)
+LIRC_GET_LENGTH = 0x8004690F # _IOR('i', 0x0000000f, __u32)
+LIRC_MODE_MODE2 = 0x00000004
+PULSE_BIT = 0x01000000
+PULSE_MASK = 0x00FFFFFF
+
+code_list = []
+PERCENT = 0.35
+BITS = 0
+ZERO_PULSE = -1
+ZERO_SPACE = -1
+ONE_PULSE = -1
+ONE_SPACE = -1
+PRE_DATA = 0x33B8
+PRE_DATA_BITS = 0
+HEADER_PULSE = -1
+HEADER_SPACE = -1
+
+conf_dict = {}
+
+
+#READ ALL .conf FILES IN /etc/lirc dir
+def readConf():
+  allDevices = {}
+  allConfFiles = []
+  temp = []
+  contents = []
+  name = ""
+  files = os.listdir("/etc/lirc")
+  for file in files:
+        if file.endswith('.conf'):
+            allConfFiles.append(file)
+
+  for filename in allConfFiles:
+    with open("/etc/lirc/"+filename, "r") as file:
+        for currentLine in file:
+          if currentLine.startswith("#"):
+            continue
+          else:
+            temp.append("".join(currentLine.strip()))
+    file.close()
+
+    for line in temp:
+      new_format = line.replace('\t', ' ')
+      contents.append(' '.join(new_format.split()))
+    while '' in contents:
+      contents.remove('')
+    index1 = -1
+    index2 = -1
+    pre_data = ""
+    contents = [x.split(" ") for x in contents]
+    for i in range(len(contents)):
+      for j in range(len(contents[i])):
+        if contents[i][j] == 'begin' and contents[i][j+1] == 'remote':
+          index1 = i
+        if contents[i][j] == 'name':
+          name = contents[i][j+1]
+          j=j+1
+        if contents[i][j] == 'pre_data':
+          pre_data = contents[i][j+1][2:]
+          j=j+1
+        if contents[i][j] == 'begin' and contents[i][j+1] == 'codes':
+          for k in range(i+1,len(contents)):
+            if contents[k][0] == 'end' and contents[k][1] == 'codes':
+              i = k+1
+              break
+            tempVal = contents[k][1][2:]
+            contents[k][1] = pre_data + tempVal
+        if contents[i][j] == 'end' and contents[i][j+1] == 'remote':
+          index2 = i
+          allDevices[name] = contents[index1:index2+1]
+          #del contents[index1:index2+1]
+          break
+    del contents[:]
+  logger.debug(allDevices)
+  return allDevices
+
+def decode(val, file, allDevices):
+  decoded_val = ""
+  final = ""
+  count = 0
+  global ZERO_PULSE, ZERO_SPACE, ONE_PULSE, ONE_SPACE, PRE_DATA, PRE_DATA_BITS, HEADER_PULSE, HEADER_SPACE, PERCENT
+ # bitCount = 0
+  if file in allDevices:
+    for key,value in enumerate(allDevices[file]):
+      for x in value:
+        if x == 'bits':
+          BITS = allDevices[file][key][1]
+        if x == 'zero':
+          ZERO_PULSE = allDevices[file][key][1]
+          ZERO_SPACE = allDevices[file][key][2]
+        if x == 'one':
+          ONE_PULSE = allDevices[file][key][1]
+          ONE_SPACE = allDevices[file][key][2]
+        if x == 'pre_data':
+          PRE_DATA = allDevices[file][key][1][2:].upper()
+        if x == 'pre_data_bits':
+          PRE_DATA_BITS = allDevices[file][key][1]
+        if x == 'header':
+          HEADER_PULSE = allDevices[file][key][1]
+          HEADER_SPACE = allDevices[file][key][2]
+  else:
+    print("file does not exist")
+    return
+  bitTotal = int(PRE_DATA_BITS) + int(BITS)
+
+  header_pulse_upper = float(HEADER_PULSE) + (float(HEADER_PULSE)*float(PERCENT))
+  header_pulse_lower = float(HEADER_PULSE) - (float(HEADER_PULSE)*float(PERCENT))
+  header_space_upper = float(HEADER_SPACE) + (float(HEADER_SPACE)*float(PERCENT))
+  header_space_lower = float(HEADER_SPACE) - (float(HEADER_SPACE)*float(PERCENT))
+
+  zero_pulse_upper = float(ZERO_PULSE) + (float(ZERO_PULSE)*float(PERCENT))
+  zero_pulse_lower = float(ZERO_PULSE) - (float(ZERO_PULSE)*float(PERCENT))
+  zero_space_upper = float(ZERO_SPACE) + (float(ZERO_SPACE)*float(PERCENT))
+  zero_space_lower = float(ZERO_SPACE) - (float(ZERO_SPACE)*float(PERCENT))
+
+  one_pulse_upper = float(ONE_PULSE) + (float(ONE_PULSE)*float(PERCENT))
+  one_pulse_lower = float(ONE_PULSE) - (float(ONE_PULSE)*float(PERCENT))
+  one_space_upper = float(ONE_SPACE) + (float(ONE_SPACE)*float(PERCENT))
+  one_space_lower = float(ONE_SPACE) - (float(ONE_SPACE)*float(PERCENT))
+
+  for i in range(len(val)):
+      if  (i+1 < len(val)) and ((float(val[i][1]) >= header_pulse_lower and float(val[i][1]) <= header_pulse_upper) or (float(val[i+1][1]) >= header_space_lower and float(val[i+1][1]) <= header_space_upper)):
+        #logger.debug( "HEADER found at i = " + str(i) + " with value = " + str(val[i][1]) ) 
+        decoded_val = ""
+        for k in range(i+2,len(val)-1,2):
+          #logger.debug( "i=" + str(i) + " k=" + str(k) + " len=" + str(len(val)))
+          #logger.debug("val[k][1] (PULSE-ZERO) = " + str(val[k][1]) + " " + str( zero_pulse_lower ) + " " + str( zero_pulse_upper ))
+          #logger.debug("val[k+1][1] (SPACE-ZERO) = " + str(val[k+1][1]) + " " + str( zero_space_lower ) + " " + str( zero_space_upper ))
+          #logger.debug("val[k][1] (PULSE-ONE) = " + str(val[k][1]) + " " + str( one_pulse_lower ) + " " + str( one_pulse_upper ))
+          #logger.debug("val[k+1][1] (SPACE-ONE) = " + str(val[k+1][1]) + " " + str( one_space_lower ) + " " + str( one_space_upper ))
+          #if float(val[k][1]) <= float(ZERO_PULSE)*float(PERCENT) and float(val[k][1]) >= float(ZERO_PULSE)/float(PERCENT) and float(val[k+1][1]) <= float(ZERO_SPACE)*float(PERCENT) and float(val[k+1][1]) >= float(ZERO_SPACE)/float(PERCENT):
+          tempVal = ""
+          if float(val[k][1]) >= zero_pulse_lower and float(val[k][1]) <= zero_pulse_upper:
+            if float(val[k+1][1]) >= zero_space_lower and float(val[k+1][1]) <= zero_space_upper:
+              #decoded_val += "0"
+              tempVal = "0"
+              count +=1
+
+          # assume that if the PULSE and SPACE equate to a "0" that they will NOT also equate to a "1"
+          if float(val[k][1]) >= one_pulse_lower and float(val[k][1]) <= one_pulse_upper:
+            if float(val[k+1][1]) >= one_space_lower and float(val[k+1][1]) <= one_space_upper:
+              #decoded_val += "1"
+              tempVal = "1"
+              count +=1
+          
+          if tempVal == "":
+            if float(val[k][1]) < zero_pulse_lower:
+              val[k][1] = zero_pulse_lower
+            if float(val[k+1][1]) > zero_space_upper and float(val[k+1][1]) < one_space_lower:
+              val[k+1][1] = zero_space_upper
+            if float(val[k+1][1]) > one_space_upper:
+              val[k+1][1] = one_space_upper
+            if float(val[k][1]) >= zero_pulse_lower and float(val[k][1]) <= zero_pulse_upper:
+              if float(val[k+1][1]) >= zero_space_lower and float(val[k+1][1]) <= zero_space_upper:
+                #decoded_val += "0"
+                tempVal = "0"
+                count +=1
+
+            # assume that if the PULSE and SPACE equate to a "0" that they will NOT also equate to a "1"
+            if float(val[k][1]) >= one_pulse_lower and float(val[k][1]) <= one_pulse_upper:
+              if float(val[k+1][1]) >= one_space_lower and float(val[k+1][1]) <= one_space_upper:
+                #decoded_val += "1"
+                tempVal = "1"
+                count +=1
+    
+          #decoded_val += tempVal
+          #logger.debug("decode_val = " + decoded_val)
+         
+          if count % 4 == 0 and count != 0 :
+            decimal = int(decoded_val,2)
+            final += str(hex(decimal)[2:])
+            decoded_val = ""
+            
+          #logger.debug("count= " + str(count) + " bitTotal=" + str(bitTotal))
+          #logger.debug("final= " + final.upper())
+ 
+          if count == bitTotal:
+            for key, value in enumerate(allDevices[file]):
+              for x in value:
+                if x.endswith(final.upper()):
+                  return allDevices[file][key][0]
+            return "error"
+          
+  logger.debug("Error: bit count does not equal total bits")
+  return
