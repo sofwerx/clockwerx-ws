@@ -2,7 +2,8 @@ version: "3"
 services:
         website:
                 container_name: clockwerx-web
-                image: registry.gitlab.com/swxadmin/clockwerx-web
+#                image: registry.gitlab.com/swxadmin/clockwerx-web
+		image: clockwerx-web
                 networks:
                         net:
                                 ipv4_address: 172.4.11.2
@@ -16,7 +17,8 @@ services:
 
         web_service:
                 container_name: clockwerx-ws
-                image: registry.gitlab.com/swxadmin/clockwerx-ws
+#                image: registry.gitlab.com/swxadmin/clockwerx-ws
+		image: clockwerx-ws
                 networks: 
                         net:
                                 ipv4_address: 172.4.11.3
